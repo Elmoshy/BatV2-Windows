@@ -1,0 +1,31 @@
+name: Build Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish
+        run: dotnet publish BatV2.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+      - name: Fetch Xray engine
+        shell: pwsh
+        run: |
+          # pin a version by replacing "latest/download" with "download/vX.Y.Z"
+          Invoke-WebRequest "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip" -OutFile xray.zip
+          Expand-Archive xray.zip -DestinationPath xray-dl
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/xray | Out-Null
+          Copy-Item out/BatV2.exe dist/
+          Copy-Item xray-dl/xray.exe dist/xray/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BatV2-Windows
+          path: dist
