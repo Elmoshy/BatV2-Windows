@@ -15,7 +15,7 @@ public static class LinkParser
             var t = tok.Trim();
             if (!t.Contains("://")) continue;
             try { ok.Add(ParseOne(t)); }
-            catch (Exception e) { bad.Add((t.Length > 40 ? t[..40] : t) + " : " + e.Message); }
+            catch (Exception e) { bad.Add((t.Length > 40 ? t.Substring(0, 40) : t) + " : " + e.Message); }
         }
         return (ok, bad);
     }
@@ -114,7 +114,7 @@ public static class LinkParser
         if (at >= 0)
         {
             var ui = main.Substring(0, at);
-            cred = ui.Contains(':') ? Pct(ui) : Encoding.UTF8.GetString(B64(ui));
+            cred = ui.IndexOf(':') >= 0 ? Pct(ui) : Encoding.UTF8.GetString(B64(ui));
             hp = main.Substring(at + 1);
         }
         else
@@ -154,7 +154,7 @@ public static class LinkParser
     static Dictionary<string, string> Query(string q)
     {
         var m = new Dictionary<string, string>();
-        foreach (var pair in q.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var pair in q.Split(new[] { '&' }, StringSplitOptions.RemoveEmptyEntries))
         {
             int e = pair.IndexOf('=');
             var k = (e < 0 ? pair : pair.Substring(0, e)).ToLowerInvariant();
@@ -163,7 +163,7 @@ public static class LinkParser
         return m;
     }
 
-    public static string Pct(string s) => s.Contains('%') ? Uri.UnescapeDataString(s) : s;
+    public static string Pct(string s) => s.IndexOf('%') >= 0 ? Uri.UnescapeDataString(s) : s;
 
     /// tolerant base64 (standard + url-safe, padding optional)
     public static byte[] B64(string s)

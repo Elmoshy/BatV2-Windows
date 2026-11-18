@@ -12,7 +12,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - name: Publish
-        run: dotnet publish BatV2.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+        run: dotnet publish BatV2.csproj -c Release -o out
       - name: Fetch Xray engine
         shell: pwsh
         run: |
@@ -23,7 +23,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/xray | Out-Null
-          Copy-Item out/BatV2.exe dist/
+          Copy-Item out/* dist/ -Recurse -Exclude *.pdb
           Copy-Item xray-dl/xray.exe dist/xray/
       - uses: actions/upload-artifact@v4
         with:

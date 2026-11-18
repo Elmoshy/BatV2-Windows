@@ -171,7 +171,7 @@ public static class ConfigBuilder
         });
         var root = new JsonObject
         {
-            ["log"] = new JsonObject { ["loglevel"] = "warning", ["error"] = logPath, ["access"] = "none" },
+            ["log"] = new JsonObject { ["loglevel"] = "info", ["error"] = logPath, ["access"] = "none" },
             ["dns"] = new JsonObject { ["servers"] = new JsonArray((JsonNode)"1.1.1.1", (JsonNode)"8.8.8.8") },
             ["inbounds"] = new JsonArray(
                 new JsonObject

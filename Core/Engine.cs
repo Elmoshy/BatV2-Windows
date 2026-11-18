@@ -80,9 +80,13 @@ public static class Engine
         catch { return null; }
     }
 
-    public static void Start(Server s)
+    public static void Start(Server orig, int level = 0)
     {
         Stop();
+        // compat levels for TLS servers: 1 = alpn http/1.1 only, 2 = also no uTLS fingerprint
+        var s = orig.Copy();
+        if (s.Security == "tls" && level >= 1) s.Alpn = "http/1.1";
+        if (s.Security == "tls" && level >= 2) s.Fp = "";
         var cfg = System.IO.Path.Combine(Store.Dir, "config.json");
         File.WriteAllText(cfg, ConfigBuilder.Full(s, Resolve(s.Address), Socks, Http, LogPath.Replace('\\', '/')));
         try { File.WriteAllText(LogPath, ""); } catch { }
@@ -100,7 +104,7 @@ public static class Engine
     {
         try
         {
-            if (proc != null && !proc.HasExited) { proc.Kill(true); proc.WaitForExit(2000); }
+            if (proc != null && !proc.HasExited) { proc.Kill(); proc.WaitForExit(2000); }
         }
         catch { }
         proc = null;
@@ -114,7 +118,7 @@ public static class Engine
             try
             {
                 using var h = new HttpClientHandler { Proxy = new WebProxy($"http://127.0.0.1:{Http}"), UseProxy = true };
-                using var c = new HttpClient(h) { Timeout = TimeSpan.FromSeconds(8) };
+                using var c = new HttpClient(h) { Timeout = TimeSpan.FromSeconds(5) };
                 using var r = await c.GetAsync(url);
                 if ((int)r.StatusCode == 204) return true;
             }
@@ -153,13 +157,21 @@ public static class Engine
         }
         try
         {
-            var bad = File.ReadAllLines(LogPath).TakeLast(40)
-                .LastOrDefault(l => l.Contains("failed", StringComparison.OrdinalIgnoreCase));
+            string[] lines;
+            using (var fs = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var sr = new StreamReader(fs))
+                lines = sr.ReadToEnd().Split('\n');
+            var tail = lines.Skip(Math.Max(0, lines.Length - 80)).ToList();
+            var bad = tail.LastOrDefault(l => l.Contains("failed to process outbound"))
+                      ?? tail.LastOrDefault(l => l.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0);
             if (bad != null)
             {
-                if (bad.Contains("closed pipe") || bad.Contains("EOF"))
-                    return "server closed the connection (account expired or wrong settings)";
-                return bad.Length > 160 ? bad[..160] : bad;
+                if (bad.Contains("certificate has expired")) return "server certificate is expired. Use Pin certificate";
+                if (bad.Contains("x509")) return "server certificate problem. Try Pin certificate";
+                if (bad.Contains("closed pipe") || bad.Contains("EOF") || bad.Contains("reset"))
+                    return "server closed the connection (wrong TLS settings or account problem)";
+                bad = bad.Trim();
+                return bad.Length > 200 ? bad.Substring(bad.Length - 200) : bad;
             }
         }
         catch { }
@@ -167,7 +179,12 @@ public static class Engine
     }
 }
 
-public record CertInfo(string Hash, string Subject, string Issuer, DateTime NotAfter);
+public class CertInfo
+{
+    public string Hash, Subject, Issuer;
+    public DateTime NotAfter;
+    public CertInfo(string h, string s, string i, DateTime n) { Hash = h; Subject = s; Issuer = i; NotAfter = n; }
+}
 
 public static class CertFetcher
 {
@@ -178,7 +195,8 @@ public static class CertFetcher
         using var ssl = new SslStream(c.GetStream(), false, (a, b, ch, e) => true);
         await ssl.AuthenticateAsClientAsync(sni);
         var cert = new X509Certificate2(ssl.RemoteCertificate);
-        var hash = Convert.ToHexString(SHA256.HashData(cert.RawData)).ToLowerInvariant();
+        using var sha = SHA256.Create();
+        var hash = BitConverter.ToString(sha.ComputeHash(cert.RawData)).Replace("-", "").ToLowerInvariant();
         return new CertInfo(hash, cert.Subject, cert.Issuer, cert.NotAfter);
     }
 }
@@ -207,39 +225,50 @@ public sealed class Guard
 
     async Task Loop(List<Server> list, int idx, CancellationToken ct)
     {
-        int fails = 0;
+        int fails = 0, level = 0;
         bool connected = false;
+        string note = "";
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 var s = list[idx];
-                Changed?.Invoke("Connecting", s.Name, "");
-                Engine.Start(s);
+                Changed?.Invoke("Connecting", level > 0 ? $"{s.Name} (compat TLS {level})" : s.Name, note);
+                note = "";
+                Engine.Start(s, level);
                 SystemProxy.Set(true, Engine.Http);
                 await Task.Delay(2000, ct);
                 while (!ct.IsCancellationRequested)
                 {
                     bool ok = Engine.Running && await Engine.HealthAsync();
                     if (ct.IsCancellationRequested) return;
+                    var label = level > 0 ? $"{s.Name} (compat TLS {level})" : s.Name;
                     if (ok)
                     {
                         fails = 0;
                         connected = true;
-                        Changed?.Invoke("Connected", s.Name, "");
+                        Changed?.Invoke("Connected", label, "");
                         await Task.Delay(25000, ct);
                         continue;
                     }
-                    fails++;
                     var why = await Engine.DiagnoseAsync(s);
+                    if (!connected && s.Security == "tls" && level < 2)
+                    {
+                        level++;
+                        note = $"retrying with compatible TLS {level} of 2. Last error: {why}";
+                        break;
+                    }
+                    fails++;
                     if (fails >= 2 && list.Count > 1)
                     {
                         idx = (idx + 1) % list.Count;
-                        Changed?.Invoke("Switching", $"to {list[idx].Name}", $"{s.Name}: {why}");
+                        level = 0;
                         fails = 0;
-                        break; // restart loop with the next server
+                        connected = false;
+                        note = $"switched from {s.Name}. {why}";
+                        break;
                     }
-                    Changed?.Invoke(connected ? "Retrying" : "Connecting", s.Name, why);
+                    Changed?.Invoke(connected ? "Retrying" : "Connecting", label, why);
                     if (!Engine.Running) break;
                     await Task.Delay(6000, ct);
                 }

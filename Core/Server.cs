@@ -35,6 +35,8 @@ public class Server
     public bool Fragment { get; set; }
     public string Sub { get; set; } = "";
 
+    public Server Copy() => (Server)MemberwiseClone();
+
     public bool SameAs(Server o) =>
         Protocol == o.Protocol && Address == o.Address && Port == o.Port && Secret == o.Secret;
 }
