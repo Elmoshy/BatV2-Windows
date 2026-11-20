@@ -142,6 +142,44 @@ public partial class MainWindow : Window
         if (Lb.SelectedItem is Row r) await PingRow(r);
     }
 
+    void Edit_Click(object s, RoutedEventArgs e)
+    {
+        if (Lb.SelectedItem is not Row r) return;
+        int i = Lb.SelectedIndex;
+        var edited = ServerEditor.Show(this, r.S);
+        if (edited == null) return;
+        rows[i] = new Row(edited);
+        Lb.SelectedIndex = i;
+        Save();
+        ShowInfo("Saved. Reconnect to apply");
+    }
+
+    void New_Click(object s, RoutedEventArgs e)
+    {
+        var n = ServerEditor.Show(this, null);
+        if (n == null) return;
+        ShowInfo(AddServers(new[] { n }) > 0 ? "Server added" : "This server already exists");
+    }
+
+    void Lb_DoubleClick(object s, MouseButtonEventArgs e)
+    {
+        if (Lb.SelectedItem != null) Edit_Click(s, e);
+    }
+
+    void Insecure_Click(object s, RoutedEventArgs e)
+    {
+        if (Lb.SelectedItem is not Row r) return;
+        if (!r.S.AllowInsecure)
+        {
+            var warn = "This server will be trusted WITHOUT checking its certificate. Anyone on your network path could read or change your traffic.\n\nOnly works with old Xray (25.x). Turn it on";
+            if (MessageBox.Show(this, warn + "?", "Trust any certificate", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        }
+        r.S.AllowInsecure = !r.S.AllowInsecure;
+        r.Refresh();
+        Save();
+        ShowInfo(r.S.AllowInsecure ? "Insecure mode ON for this server. Reconnect to apply" : "Insecure mode OFF. Reconnect to apply");
+    }
+
     async void Pin_Click(object s, RoutedEventArgs e)
     {
         if (Lb.SelectedItem is not Row r) return;

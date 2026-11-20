@@ -67,6 +67,10 @@ public static class Engine
         throw new FileNotFoundException("xray.exe not found. Put it in the xray folder next to BatV2.exe");
     }
 
+    /// info level log records every host you open, so it is OFF unless the last attempt failed with no clear reason
+    public static volatile bool Verbose;
+    public const string Generic = "no answer through the tunnel";
+
     public static bool Running => proc != null && !proc.HasExited;
 
     public static string Resolve(string host)
@@ -88,16 +92,60 @@ public static class Engine
         if (s.Security == "tls" && level >= 1) s.Alpn = "http/1.1";
         if (s.Security == "tls" && level >= 2) s.Fp = "";
         var cfg = System.IO.Path.Combine(Store.Dir, "config.json");
-        File.WriteAllText(cfg, ConfigBuilder.Full(s, Resolve(s.Address), Socks, Http, LogPath.Replace('\\', '/')));
+        File.WriteAllText(cfg, ConfigBuilder.Full(s, Resolve(s.Address), Socks, Http, LogPath.Replace('\\', '/'), Verbose ? "info" : "warning"));
         try { File.WriteAllText(LogPath, ""); } catch { }
+        KillStrays();
+        lock (OutLock) Out.Clear();
         proc = Process.Start(new ProcessStartInfo
         {
             FileName = ExePath(),
             Arguments = $"run -c \"{cfg}\"",
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             WorkingDirectory = System.IO.Path.GetDirectoryName(ExePath())
         });
+        DataReceivedEventHandler grab = (o, e) =>
+        {
+            if (e.Data == null) return;
+            lock (OutLock) { if (Out.Length < 6000) Out.AppendLine(e.Data); }
+        };
+        proc.OutputDataReceived += grab;
+        proc.ErrorDataReceived += grab;
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+    }
+
+    static readonly System.Text.StringBuilder Out = new System.Text.StringBuilder();
+    static readonly object OutLock = new object();
+
+    /// an old xray left from a test (or a crash) keeps the ports busy and makes the new one exit silently
+    public static void KillStrays()
+    {
+        string mine;
+        try { mine = ExePath(); } catch { return; }
+        foreach (var p in Process.GetProcessesByName("xray"))
+        {
+            try
+            {
+                if (string.Equals(p.MainModule.FileName, mine, StringComparison.OrdinalIgnoreCase))
+                {
+                    p.Kill();
+                    p.WaitForExit(1500);
+                }
+            }
+            catch { }
+        }
+    }
+
+    static string EngineOutput()
+    {
+        lock (OutLock)
+        {
+            var l = Out.ToString().Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).LastOrDefault();
+            return l == null ? "" : (l.Length > 200 ? l.Substring(l.Length - 200) : l);
+        }
     }
 
     public static void Stop()
@@ -108,6 +156,7 @@ public static class Engine
         }
         catch { }
         proc = null;
+        try { File.Delete(LogPath); } catch { }
     }
 
     /// real test through the tunnel: two urls, one answer is enough
@@ -144,6 +193,11 @@ public static class Engine
     /// explain WHY it fails instead of just saying it failed
     public static async Task<string> DiagnoseAsync(Server s)
     {
+        if (!Running)
+        {
+            var o = EngineOutput();
+            return o.Length > 0 ? "engine stopped: " + o : "engine stopped right after start (port 10808 or 10809 busy or bad config)";
+        }
         if (await TcpPingAsync(s.Address, s.Port) < 0) return "cannot reach the server (blocked or down)";
         if (s.Security == "tls" && s.Pin.Length == 0)
         {
@@ -175,7 +229,7 @@ public static class Engine
             }
         }
         catch { }
-        return "no answer through the tunnel";
+        return Generic;
     }
 }
 
@@ -205,22 +259,43 @@ public static class CertFetcher
 public sealed class Guard
 {
     public event Action<string, string, string> Changed; // state, detail, error
+    readonly object gate = new object();
     CancellationTokenSource cts;
 
     public void Start(List<Server> list, int idx)
     {
-        Stop();
-        cts = new CancellationTokenSource();
-        var ct = cts.Token;
+        CancellationToken ct;
+        lock (gate)
+        {
+            if (cts != null) cts.Cancel();
+            Engine.Stop();
+            cts = new CancellationTokenSource();
+            ct = cts.Token;
+        }
         _ = Task.Run(() => Loop(list, idx, ct));
     }
 
     public void Stop()
     {
-        cts?.Cancel();
-        Engine.Stop();
-        SystemProxy.Set(false, Engine.Http);
-        Changed?.Invoke("Disconnected", "", "");
+        lock (gate)
+        {
+            if (cts != null) cts.Cancel();
+            Engine.Stop();
+            SystemProxy.Set(false, Engine.Http);
+        }
+        Changed?.Invoke("Disconnected", "", ""); // never raised while holding the lock (UI thread could deadlock)
+    }
+
+    /// start engine + system proxy atomically. false = someone pressed Stop meanwhile, nothing is left running
+    bool Launch(Server s, int level, CancellationToken ct)
+    {
+        lock (gate)
+        {
+            if (ct.IsCancellationRequested) return false;
+            Engine.Start(s, level);
+            SystemProxy.Set(true, Engine.Http);
+            return true;
+        }
     }
 
     async Task Loop(List<Server> list, int idx, CancellationToken ct)
@@ -235,8 +310,7 @@ public sealed class Guard
                 var s = list[idx];
                 Changed?.Invoke("Connecting", level > 0 ? $"{s.Name} (compat TLS {level})" : s.Name, note);
                 note = "";
-                Engine.Start(s, level);
-                SystemProxy.Set(true, Engine.Http);
+                if (!Launch(s, level, ct)) return;
                 await Task.Delay(2000, ct);
                 while (!ct.IsCancellationRequested)
                 {
@@ -247,11 +321,13 @@ public sealed class Guard
                     {
                         fails = 0;
                         connected = true;
+                        Engine.Verbose = false;
                         Changed?.Invoke("Connected", label, "");
                         await Task.Delay(25000, ct);
                         continue;
                     }
                     var why = await Engine.DiagnoseAsync(s);
+                    if (why == Engine.Generic) Engine.Verbose = true; // next restart logs more detail
                     if (!connected && s.Security == "tls" && level < 2)
                     {
                         level++;
@@ -277,9 +353,15 @@ public sealed class Guard
         catch (OperationCanceledException) { }
         catch (Exception e)
         {
-            Engine.Stop();
-            SystemProxy.Set(false, Engine.Http);
-            Changed?.Invoke("Disconnected", "", e.Message);
+            lock (gate)
+            {
+                if (!ct.IsCancellationRequested)
+                {
+                    Engine.Stop();
+                    SystemProxy.Set(false, Engine.Http);
+                }
+            }
+            if (!ct.IsCancellationRequested) Changed?.Invoke("Disconnected", "", e.Message);
         }
     }
 }

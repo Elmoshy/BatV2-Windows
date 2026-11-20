@@ -12,7 +12,8 @@ public class Row : INotifyPropertyChanged
     public Row(Server s) { S = s; }
 
     public string Title => S.Name;
-    public string Detail => $"{S.Protocol.ToUpperInvariant()}   {S.Address}:{S.Port}";
+    public string Detail => $"{S.Protocol.ToUpperInvariant()}   {S.Address}:{S.Port}" + (S.AllowInsecure ? "   INSECURE" : "");
+    public void Refresh() => N(nameof(Detail));
 
     string ping = "—";
     public string Ping { get => ping; set { ping = value; N(nameof(Ping)); N(nameof(PingBrush)); } }

@@ -33,6 +33,8 @@ public class Server
     public string Sid { get; set; } = "";
     public string Spx { get; set; } = "";
     public bool Fragment { get; set; }
+    /// skip certificate verification. Only works on old Xray (25.x). New Xray removed it
+    public bool AllowInsecure { get; set; }
     public string Sub { get; set; } = "";
 
     public Server Copy() => (Server)MemberwiseClone();

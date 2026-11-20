@@ -16,8 +16,8 @@ jobs:
       - name: Fetch Xray engine
         shell: pwsh
         run: |
-          # pin a version by replacing "latest/download" with "download/vX.Y.Z"
-          Invoke-WebRequest "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip" -OutFile xray.zip
+          # v25.5.16 = same Xray as NetMod. It still honors allowInsecure (new Xray removed it)
+          Invoke-WebRequest "https://github.com/XTLS/Xray-core/releases/download/v25.5.16/Xray-windows-64.zip" -OutFile xray.zip
           Expand-Archive xray.zip -DestinationPath xray-dl
       - name: Package
         shell: pwsh

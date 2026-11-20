@@ -141,6 +141,7 @@ public static class ConfigBuilder
                 if (s.Alpn.Length > 0) t["alpn"] = List(s.Alpn);
                 if (s.Pin.Length > 0) t["pinnedPeerCertSha256"] = NormalizePin(s.Pin);
                 if (s.Vcn.Length > 0) t["verifyPeerCertByName"] = s.Vcn;
+                if (s.AllowInsecure) t["allowInsecure"] = true;
                 m["tlsSettings"] = t;
                 break;
             case "reality":
@@ -158,7 +159,7 @@ public static class ConfigBuilder
         return m;
     }
 
-    public static string Full(Server s, string ip, int socks, int http, string logPath)
+    public static string Full(Server s, string ip, int socks, int http, string logPath, string logLevel = "warning")
     {
         var outs = new JsonArray(Outbound(s, ip));
         if (s.Fragment) outs.Add(FragmentOutbound());
@@ -171,7 +172,7 @@ public static class ConfigBuilder
         });
         var root = new JsonObject
         {
-            ["log"] = new JsonObject { ["loglevel"] = "info", ["error"] = logPath, ["access"] = "none" },
+            ["log"] = new JsonObject { ["loglevel"] = logLevel, ["error"] = logPath, ["access"] = "none" },
             ["dns"] = new JsonObject { ["servers"] = new JsonArray((JsonNode)"1.1.1.1", (JsonNode)"8.8.8.8") },
             ["inbounds"] = new JsonArray(
                 new JsonObject
